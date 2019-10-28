@@ -15,6 +15,7 @@ from keras.optimizers import Adam
 from keras import backend as K
 from keras_bert import load_vocabulary, load_trained_model_from_checkpoint
 from keras_bert import Tokenizer
+from keras_bert import AdamWarmup, calc_train_steps
 
 
 CLS_TOKEN = '[CLS]'
@@ -42,6 +43,10 @@ def argparser():
                     help='Initial learning rate')
     ap.add_argument('--train_batch_size', type=int, default=32,
                     help='Batch size for training')
+    ap.add_argument('--num_train_epochs', type=int, default=1,
+                    help='Number of training epochs')
+    ap.add_argument('--continuation_label', default=None,
+                    help='Label to assign to continuation word pieces')
     ap.add_argument('--output', default=None)    # TODO rethink
     return ap
 
@@ -58,15 +63,24 @@ class InputFeatures(object):
 
 
 class EvaluationCallback(Callback):
-    def __init__(self, title, X, Y):
+    def __init__(self, title, input_ids, input_segments, Y, pad=0):
         self.title = title
-        self.X = X
+        self.input_ids = input_ids
+        self.input_segments = input_segments
+        self.X = [input_ids, input_segments]
         self.Y = Y
+        self.flat_input = np.ravel(input_ids)
+        self.flat_Y = np.ravel(Y)
+        self.flat_mask = (self.flat_input != pad)
+        self.total_unmasked = np.sum(self.flat_mask)
 
     def on_epoch_end(self, epoch, logs={}):
         pred = self.model.predict(self.X)
         pred = np.argmax(pred, axis=-1)
-        acc = (np.ravel(pred)==np.ravel(self.Y)).mean()
+        flat_pred = np.ravel(pred)
+        correct = flat_pred == self.flat_Y
+        correct_unmasked = correct * self.flat_mask
+        acc = np.sum(correct_unmasked)/self.total_unmasked
         print('*'*20, self.title, acc, '*'*20)
         # TODO track best, save checkpoints
 
@@ -110,6 +124,10 @@ def load_labels(options):
             if l.isspace():
                 continue
             labels.append(l.strip())
+    if (options.continuation_label is not None and
+        options.continuation_label not in labels):
+        labels = [options.continuation_label] + labels
+        print('added continuation label {}'.format(options.continuation_label))
     print('loaded {} labels from {}: {}'.format(len(labels), fn, labels))
     return labels
 
@@ -141,8 +159,10 @@ def tokenize_sentence(sentence, tokenizer, options):
         pieces = tokenizer._tokenize(token)   # tokenize() adds [CLS] and [SEP]
         tokenized.append((pieces[0], tag))
         for piece in pieces[1:]:
-            # TODO fix tag
-            tokenized.append((piece, tag))
+            if options.continuation_label is None:
+                tokenized.append((piece, tag))
+            else:
+                tokenized.append((piece, options.continuation_label))
     return tokenized
 
 
@@ -159,15 +179,15 @@ def index_sentence(sentence, vocab, label_map, oov_count):
     return indexed
 
 
-def create_example(sentence, pad_token_id, pad_label_id, options):
+def create_example(sentence, input_mask, pad_token_id, pad_label_id, options):
     total_len = options.max_seq_length
     input_ids = [t_id for t_id, l_id in sentence]
     label_ids = [l_id for t_id, l_id in sentence]
     input_len, pad_len = len(input_ids), total_len-len(input_ids)
     input_ids += [pad_token_id]*pad_len
     label_ids += [pad_label_id]*pad_len
+    input_mask += [0]*pad_len
     segment_ids = [0] * total_len
-    input_mask = [1]*input_len + [0]*pad_len
     return InputFeatures(input_ids, input_mask, segment_ids, label_ids)
 
 
@@ -190,6 +210,13 @@ def create_examples(sentences, tokenizer, labels, options):
         wrapped = [(CLS_TOKEN, pad_label)] + s + [(SEP_TOKEN, pad_label)]
         wrapped_sents.append(wrapped)
 
+    input_masks = []
+    for s in wrapped_sents:
+        # mask = [0 if t[0].startswith('##') else 1 for t in s]
+        mask = [1] * len(s)
+        input_masks.append(mask)
+    print(input_masks[0])
+
     vocab = tokenizer._token_dict
     label_map = { l: i for i, l in enumerate(labels) }
     oov_count = Counter()
@@ -201,8 +228,8 @@ def create_examples(sentences, tokenizer, labels, options):
     pad_token_id = vocab[PAD_TOKEN]
     pad_label_id = label_map[pad_label]
     examples = []
-    for s in indexed_sents:
-        example = create_example(s, pad_token_id, pad_label_id, options)
+    for s, m in zip(indexed_sents, input_masks):
+        example = create_example(s, m, pad_token_id, pad_label_id, options)
         examples.append(example)
 
     for i in [0]:
@@ -216,30 +243,47 @@ def create_examples(sentences, tokenizer, labels, options):
 
 
 # Workaround for issue https://github.com/keras-team/keras/issues/11749 from
-# https://github.com/keras-team/keras/issues/11749#issuecomment-498709628
+# https://github.com/keras-team/keras/blob/master/keras/metrics.py#L1911
 def accuracy(y_true, y_pred):
-    return K.cast(K.equal(K.max(y_true, axis=-1),
-                          K.cast(K.argmax(y_pred, axis=-1), K.floatx())),
-                  K.floatx())
+    # reshape in case it's in shape (num_samples, 1) instead of (num_samples,)
+    if K.ndim(y_true) == K.ndim(y_pred):
+        y_true = K.squeeze(y_true, -1)
+    # convert dense predictions to labels
+    y_pred_labels = K.argmax(y_pred, axis=-1)
+    y_pred_labels = K.cast(y_pred_labels, K.floatx())
+    return K.cast(K.equal(y_true, y_pred_labels), K.floatx())
 
 
-def write_predictions(token_ids, pred, vocab, labels, filename):
+def write_predictions(tokens, token_ids, pred, vocab, labels, filename):
     pred_ids = np.argmax(pred, axis=-1)
     inv_label_map = { i: l for i, l in enumerate(labels) }
     inv_vocab = { v: k for k, v in vocab.items() }
-    #print('x', len(token_ids), token_ids.shape)
-    #print('y', len(pred_ids), pred_ids.shape)
     total = 0
+    orig_tokens = [t for s in tokens for t in s]
+    curr_parts, curr_tags, orig_idx = [], [], 0
     with open(filename, 'w') as out:
         for t_ids, p_ids in zip(token_ids, pred_ids):
             for t_id, p_id in zip(t_ids, p_ids):
                 token, tag = inv_vocab[t_id], inv_label_map[p_id]
-                if token == PAD_TOKEN:
+                if token in (CLS_TOKEN, SEP_TOKEN, PAD_TOKEN):
                     continue
-                print('{}\t{}'.format(token, tag), file=out)
-                total += 1
+                if token.startswith('##'):
+                    token = token[2:]
+                curr_parts.append(token)
+                curr_tags.append(tag)
+                if (sum(len(p) for p in curr_parts) >= 
+                    len(orig_tokens[orig_idx])):
+                    assert ''.join(curr_parts) == orig_tokens[orig_idx], \
+                        'mismatch: "{}" vs "{}"'.format(''.join(curr_parts),
+                                                        orig_tokens[orig_idx])
+                    print('{}\t{}'.format(''.join(curr_parts),
+                                          ' '.join(curr_tags)), file=out)
+                    curr_parts = []
+                    curr_tags = []
+                    orig_idx += 1
+                    total += 1
             print(file=out)
-    print('saved {} predictions in {}'.format(total, filename))
+    print('saved {} tokens in {}'.format(total, filename))
 
 
 def main(argv):
@@ -250,24 +294,37 @@ def main(argv):
 
     train_data = create_examples(train_sents, tokenizer, labels, args)
     dev_data = create_examples(dev_sents, tokenizer, labels, args)
-    test_data = create_examples(dev_sents, tokenizer, labels, args)
+    test_data = create_examples(test_sents, tokenizer, labels, args)
 
     output = Dense(len(labels), activation='softmax')(bert.output)
     model = Model(inputs=bert.inputs, outputs=output)
     model.summary(line_length=80)
 
-    optimizer = Adam(lr=args.learning_rate)
+    train_input = np.array([e.input_ids for e in train_data])
+    train_mask = np.array([e.input_mask for e in train_data])
+    train_segments = np.array([e.segment_ids for e in train_data])
+    train_output = np.expand_dims(np.array([e.label_ids for e in train_data]),-1)
+
+    total_steps, warmup_steps = calc_train_steps(
+        num_example=len(train_input),
+        batch_size=args.train_batch_size,
+        epochs=args.num_train_epochs,
+        warmup_proportion=0.1,
+    )
+
+    optimizer = AdamWarmup(
+        total_steps,
+        warmup_steps,
+        lr=args.learning_rate,
+        min_lr=0    # TODO
+    )
+
     model.compile(
         loss='sparse_categorical_crossentropy',
         sample_weight_mode='temporal',
         metrics=[accuracy],
         optimizer=optimizer
     )
-
-    train_input = np.array([e.input_ids for e in train_data])
-    train_mask = np.array([e.input_mask for e in train_data])
-    train_segments = np.array([e.segment_ids for e in train_data])
-    train_output = np.expand_dims(np.array([e.label_ids for e in train_data]),-1)
 
     dev_input = np.array([e.input_ids for e in dev_data])
     dev_mask = np.array([e.input_mask for e in dev_data])
@@ -281,16 +338,16 @@ def main(argv):
     print('start training at', datetime.now())
     callbacks = [
         EvaluationCallback(
-            'train', [train_input, train_segments], train_output),
+            'train', train_input, train_segments, train_output),
         EvaluationCallback(
-            'dev', [dev_input, dev_segments], dev_output),
+            'dev', dev_input, dev_segments, dev_output),
     ]
     model.fit(
         [train_input, train_segments],
         train_output,
         sample_weight=train_mask,
         batch_size=args.train_batch_size,
-        epochs=1,
+        epochs=args.num_train_epochs,
         verbose=1,
         callbacks=callbacks
     )
@@ -302,7 +359,8 @@ def main(argv):
             [test_input, test_segments],
             verbose=1
         )
-        write_predictions(test_input, pred, vocab, labels, args.output)
+        test_tokens = [[t for t, _ in s] for s in test_sents]
+        # write_predictions(test_tokens, test_input, pred, vocab, labels, args.output)
     return 0
 
 
