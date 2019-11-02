@@ -52,7 +52,8 @@ def argparser():
 
 
 class InputFeatures(object):
-    def __init__(self, input_ids, input_mask, segment_ids, label_ids):
+    def __init__(self, input_ids, input_mask, segment_ids, label_ids,
+                 head_flags):
         if any(len(i) != len(input_ids)
                for i in (input_mask, segment_ids, label_ids)):
             raise ValueError('length mismatch')
@@ -60,10 +61,11 @@ class InputFeatures(object):
         self.input_mask = input_mask
         self.segment_ids = segment_ids
         self.label_ids = label_ids
+        self.head_flags = head_flags
 
 
 class EvaluationCallback(Callback):
-    def __init__(self, title, input_ids, input_segments, Y, pad=0):
+    def __init__(self, title, input_ids, input_segments, Y, output_mask):
         self.title = title
         self.input_ids = input_ids
         self.input_segments = input_segments
@@ -71,8 +73,9 @@ class EvaluationCallback(Callback):
         self.Y = Y
         self.flat_input = np.ravel(input_ids)
         self.flat_Y = np.ravel(Y)
-        self.flat_mask = (self.flat_input != pad)
+        self.flat_mask = np.ravel(output_mask)
         self.total_unmasked = np.sum(self.flat_mask)
+        self.best, self.best_epoch = None, None
 
     def on_epoch_end(self, epoch, logs={}):
         pred = self.model.predict(self.X)
@@ -81,8 +84,10 @@ class EvaluationCallback(Callback):
         correct = flat_pred == self.flat_Y
         correct_unmasked = correct * self.flat_mask
         acc = np.sum(correct_unmasked)/self.total_unmasked
-        print('*'*20, self.title, acc, '*'*20)
-        # TODO track best, save checkpoints
+        if self.best is None or acc > self.best:
+            self.best = acc
+            self.best_epoch = epoch
+        print('#'*20, self.title, acc, '#'*20)
 
 
 def load_pretrained(options):
@@ -149,7 +154,7 @@ def split_sentence(sentence, options):
     sentences.append(sentence)
     if len(sentences) > 1:
         print('SPLIT:',
-              ' /// '.join(' '.join(t for t, _ in s) for s in sentences))
+              ' /// '.join(' '.join(t[0] for t in s) for s in sentences))
     return sentences
 
 
@@ -157,38 +162,41 @@ def tokenize_sentence(sentence, tokenizer, options):
     tokenized = []
     for token, tag in sentence:
         pieces = tokenizer._tokenize(token)   # tokenize() adds [CLS] and [SEP]
-        tokenized.append((pieces[0], tag))
+        tokenized.append((pieces[0], tag, 1))
         for piece in pieces[1:]:
             if options.continuation_label is None:
-                tokenized.append((piece, tag))
+                tokenized.append((piece, tag, 0))    # copy from head
             else:
-                tokenized.append((piece, options.continuation_label))
+                tokenized.append((piece, options.continuation_label, 0))
     return tokenized
 
 
 def index_sentence(sentence, vocab, label_map, oov_count):
     indexed = []
-    for token, tag in sentence:
+    for token, tag, is_head in sentence:
         if token in vocab:
             token_id = vocab[token]
         else:
             token_id = vocab[UNK_TOKEN]
             oov_count[token] += 1
         label_id = label_map[tag]
-        indexed.append((token_id, label_id))
+        indexed.append((token_id, label_id, is_head))
     return indexed
 
 
 def create_example(sentence, input_mask, pad_token_id, pad_label_id, options):
     total_len = options.max_seq_length
-    input_ids = [t_id for t_id, l_id in sentence]
-    label_ids = [l_id for t_id, l_id in sentence]
+    input_ids = [t_id for t_id, l_id, is_head in sentence]
+    label_ids = [l_id for t_id, l_id, is_head in sentence]
+    head_flags = [is_head for t_id, l_id, is_head in sentence]
     input_len, pad_len = len(input_ids), total_len-len(input_ids)
     input_ids += [pad_token_id]*pad_len
     label_ids += [pad_label_id]*pad_len
-    input_mask += [0]*pad_len
+    head_flags += [0] * pad_len
+    input_mask += [0] * pad_len
     segment_ids = [0] * total_len
-    return InputFeatures(input_ids, input_mask, segment_ids, label_ids)
+    return InputFeatures(input_ids, input_mask, segment_ids, label_ids,
+                         head_flags)
 
 
 def create_examples(sentences, tokenizer, labels, options):
@@ -202,18 +210,15 @@ def create_examples(sentences, tokenizer, labels, options):
         split_sents.extend(split_sentence(s, options))
     print(split_sents[0])
 
-    # TODO: optional merge
-
     pad_label = labels[0]    # TODO clarify assumption
     wrapped_sents = []
     for s in split_sents:
-        wrapped = [(CLS_TOKEN, pad_label)] + s + [(SEP_TOKEN, pad_label)]
+        wrapped = [(CLS_TOKEN, pad_label, 0)]+s+[(SEP_TOKEN, pad_label, 0)]
         wrapped_sents.append(wrapped)
 
     input_masks = []
     for s in wrapped_sents:
-        # mask = [0 if t[0].startswith('##') else 1 for t in s]
-        mask = [1] * len(s)
+        mask = [t[2] for t in s]    # head
         input_masks.append(mask)
     print(input_masks[0])
 
@@ -233,57 +238,58 @@ def create_examples(sentences, tokenizer, labels, options):
         examples.append(example)
 
     for i in [0]:
-        tokens = [token for token, tag in wrapped_sents[i]]
-        print(tokens)
-        print(examples[i].input_ids)
-        print(examples[i].input_mask)
-        print(examples[i].segment_ids)
-        print(examples[i].label_ids)
+        tokens = [token for token, tag, is_head in wrapped_sents[i]]
+        tags = [tag for token, tag, is_head in wrapped_sents[i]]
+        head_flags = [is_head for token, tag, is_head in wrapped_sents[i]]
+        print('tokens     ', i, tokens)
+        print('tags       ', i, tags)
+        print('heads      ', i, head_flags)
+        print('input_ids  ', i, examples[i].input_ids)
+        print('input_mask ', i, examples[i].input_mask)
+        print('segment_ids', i, examples[i].segment_ids)
+        print('label_ids  ', i, examples[i].label_ids)
+        print('head_flags ', i, examples[i].head_flags)
     return examples
 
 
-# Workaround for issue https://github.com/keras-team/keras/issues/11749 from
-# https://github.com/keras-team/keras/blob/master/keras/metrics.py#L1911
-def accuracy(y_true, y_pred):
-    # reshape in case it's in shape (num_samples, 1) instead of (num_samples,)
-    if K.ndim(y_true) == K.ndim(y_pred):
-        y_true = K.squeeze(y_true, -1)
-    # convert dense predictions to labels
-    y_pred_labels = K.argmax(y_pred, axis=-1)
-    y_pred_labels = K.cast(y_pred_labels, K.floatx())
-    return K.cast(K.equal(y_true, y_pred_labels), K.floatx())
+def flatten(list_of_lists):
+    return [i for l in list_of_lists for i in l]
 
 
-def write_predictions(tokens, token_ids, pred, vocab, labels, filename):
+def write_predictions(sentences, token_ids, head_flags, pred, vocab, labels,
+                      filename):
     pred_ids = np.argmax(pred, axis=-1)
     inv_label_map = { i: l for i, l in enumerate(labels) }
     inv_vocab = { v: k for k, v in vocab.items() }
-    total = 0
-    orig_tokens = [t for s in tokens for t in s]
-    curr_parts, curr_tags, orig_idx = [], [], 0
+    token_ids = flatten(token_ids)    
+    pred_ids = flatten(pred_ids)
+    head_flags = flatten(head_flags)
+    if (len(token_ids) != len(pred_ids) or
+        len(token_ids) != len(head_flags)):
+        raise ValueError('length mismatch')
+
+    parts, preds = [], []
+    for t_id, p_id, is_head in zip(token_ids, pred_ids, head_flags):
+        token, tag = inv_vocab[t_id], inv_label_map[p_id]
+        if token in (CLS_TOKEN, PAD_TOKEN, SEP_TOKEN):
+            continue
+        if is_head:
+            parts.append([])
+            preds.append([])
+        if token.startswith('##'):
+            token = token[2:]
+        parts[-1].append(token)
+        preds[-1].append(tag)
+
+    pred_idx = 0
     with open(filename, 'w') as out:
-        for t_ids, p_ids in zip(token_ids, pred_ids):
-            for t_id, p_id in zip(t_ids, p_ids):
-                token, tag = inv_vocab[t_id], inv_label_map[p_id]
-                if token in (CLS_TOKEN, SEP_TOKEN, PAD_TOKEN):
-                    continue
-                if token.startswith('##'):
-                    token = token[2:]
-                curr_parts.append(token)
-                curr_tags.append(tag)
-                if (sum(len(p) for p in curr_parts) >= 
-                    len(orig_tokens[orig_idx])):
-                    assert ''.join(curr_parts) == orig_tokens[orig_idx], \
-                        'mismatch: "{}" vs "{}"'.format(''.join(curr_parts),
-                                                        orig_tokens[orig_idx])
-                    print('{}\t{}'.format(''.join(curr_parts),
-                                          ' '.join(curr_tags)), file=out)
-                    curr_parts = []
-                    curr_tags = []
-                    orig_idx += 1
-                    total += 1
+        for sentence in sentences:
+            for token in sentence:
+                tag = preds[pred_idx][0]
+                print('{}\t{}'.format(token, tag), file=out)
+                pred_idx += 1
             print(file=out)
-    print('saved {} tokens in {}'.format(total, filename))
+    print('saved {} tokens in {}'.format(pred_idx, filename))
 
 
 def main(argv):
@@ -301,9 +307,11 @@ def main(argv):
     model.summary(line_length=80)
 
     train_input = np.array([e.input_ids for e in train_data])
-    train_mask = np.array([e.input_mask for e in train_data])
+    train_in_mask = np.array([e.input_mask for e in train_data])
     train_segments = np.array([e.segment_ids for e in train_data])
-    train_output = np.expand_dims(np.array([e.label_ids for e in train_data]),-1)
+    train_output = np.expand_dims(
+        np.array([e.label_ids for e in train_data]), -1)
+    train_head_flags = np.array([e.head_flags for e in train_data])
 
     total_steps, warmup_steps = calc_train_steps(
         num_example=len(train_input),
@@ -322,36 +330,34 @@ def main(argv):
     model.compile(
         loss='sparse_categorical_crossentropy',
         sample_weight_mode='temporal',
-        metrics=[accuracy],
         optimizer=optimizer
     )
 
     dev_input = np.array([e.input_ids for e in dev_data])
-    dev_mask = np.array([e.input_mask for e in dev_data])
+    dev_in_mask = np.array([e.input_mask for e in dev_data])
     dev_segments = np.array([e.segment_ids for e in dev_data])
     dev_output = np.expand_dims(np.array([e.label_ids for e in dev_data]),-1)
+    dev_head_flags = np.array([e.head_flags for e in dev_data])
 
-    print(len(train_input))
-    print(len(train_mask))
-    print(len(train_segments))
-    print(len(train_output))
-    print('start training at', datetime.now())
-    callbacks = [
-        EvaluationCallback(
-            'train', train_input, train_segments, train_output),
-        EvaluationCallback(
-            'dev', dev_input, dev_segments, dev_output),
-    ]
+    train_start = datetime.now()
+    print('start training at', train_start)
+    train_cb = EvaluationCallback(
+        'train', train_input, train_segments, train_output, train_head_flags)
+    dev_cb = EvaluationCallback(
+        'dev', dev_input, dev_segments, dev_output, dev_head_flags)
+    callbacks = [train_cb, dev_cb]
     model.fit(
         [train_input, train_segments],
         train_output,
-        sample_weight=train_mask,
+        sample_weight=train_in_mask,
         batch_size=args.train_batch_size,
         epochs=args.num_train_epochs,
         verbose=1,
         callbacks=callbacks
     )
-    print('done training', datetime.now())
+    train_end = datetime.now()
+    print('done training', train_end, 'time', train_end-train_start)
+
     if args.output is not None:
         test_input = np.array([e.input_ids for e in test_data])
         test_segments = np.array([e.segment_ids for e in test_data])
@@ -360,7 +366,10 @@ def main(argv):
             verbose=1
         )
         test_tokens = [[t for t, _ in s] for s in test_sents]
-        # write_predictions(test_tokens, test_input, pred, vocab, labels, args.output)
+        test_head_flags = np.array([e.head_flags for e in test_data])
+        write_predictions(test_tokens, test_input, test_head_flags,
+                          pred, vocab, labels, args.output)
+    print('best dev result', dev_cb.best, 'for epoch', dev_cb.best_epoch)
     return 0
 
 
