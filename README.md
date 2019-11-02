@@ -2,6 +2,33 @@
 
 Part-of-speech tagging using BERT
 
+## Quickstart
+
+Download BERT models
+
+```
+./scripts/getmodels.sh
+```
+
+Experiment with FinBERT cased and TDT data
+
+```
+MODELDIR="models/bert-base-finnish-cased"
+DATADIR="data/tdt"
+
+srun python3 train.py \
+    --vocab_file "$MODELDIR/vocab.txt" \
+    --bert_config_file "$MODELDIR/bert_config.json" \
+    --init_checkpoint "$MODELDIR/bert-base-finnish-cased" \
+    --data_dir "$DATADIR" \
+    --learning_rate 5e-5 \
+    --num_train_epochs 3 \
+    --output pred.tsv
+
+python scripts/mergepos.py "$DATADIR/test.conllu" pred.tsv > pred.conllu
+python scripts/conll18_ud_eval.py -v "$DATADIR/gold-test.conllu" pred.conllu
+```
+
 ## CoNLL'18 UD data
 
 Manually annotated data
