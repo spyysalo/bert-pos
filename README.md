@@ -16,7 +16,7 @@ Experiment with FinBERT cased and TDT data
 MODELDIR="models/bert-base-finnish-cased"
 DATADIR="data/tdt"
 
-srun python3 train.py \
+python3 train.py \
     --vocab_file "$MODELDIR/vocab.txt" \
     --bert_config_file "$MODELDIR/bert_config.json" \
     --init_checkpoint "$MODELDIR/bert-base-finnish-cased" \
