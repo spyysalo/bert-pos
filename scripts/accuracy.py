@@ -40,7 +40,8 @@ def main(argv):
         if gold_tag == pred_tag:
             correct += 1
         total += 1
-    print('Accuracy\t{:.2%}\t({}/{})'.format(correct/total, correct, total))
+    # print('Accuracy\t{:.2%}\t({}/{})'.format(correct/total, correct, total))
+    print('accuracy\t{:.2%}'.format(correct/total))
 
 
 if __name__ == '__main__':

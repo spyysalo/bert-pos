@@ -47,6 +47,7 @@ def argparser():
                     help='Number of training epochs')
     ap.add_argument('--continuation_label', default=None,
                     help='Label to assign to continuation word pieces')
+    ap.add_argument('--predict', default=None, choices=['dev', 'test'])
     ap.add_argument('--output', default=None)    # TODO rethink
     return ap
 
@@ -282,6 +283,8 @@ def write_predictions(sentences, token_ids, head_flags, pred, vocab, labels,
         preds[-1].append(tag)
 
     pred_idx = 0
+    if filename is None:
+        filename = '/dev/stdout'    # TODO
     with open(filename, 'w') as out:
         for sentence in sentences:
             for token in sentence:
@@ -324,6 +327,11 @@ def main(argv):
         total_steps,
         warmup_steps,
         lr=args.learning_rate,
+        weight_decay=0.01,
+        beta_1=0.9,
+        beta_2=0.999,
+        epsilon=1e-6,
+        weight_decay_pattern=['embeddings', 'kernel', 'W1', 'W2', 'Wk', 'Wq', 'Wv', 'Wo'],
         min_lr=0    # TODO
     )
 
@@ -358,16 +366,21 @@ def main(argv):
     train_end = datetime.now()
     print('done training', train_end, 'time', train_end-train_start)
 
-    if args.output is not None:
-        test_input = np.array([e.input_ids for e in test_data])
-        test_segments = np.array([e.segment_ids for e in test_data])
+    if args.predict is not None:
+        if args.predict == 'dev':
+            pred_data, pred_sents = dev_data, dev_sents
+        else:
+            assert args.predict == 'test'
+            pred_data, pred_sents = test_data, test_sents
+        pred_input = np.array([e.input_ids for e in pred_data])
+        pred_segments = np.array([e.segment_ids for e in pred_data])
         pred = model.predict(
-            [test_input, test_segments],
+            [pred_input, pred_segments],
             verbose=1
         )
-        test_tokens = [[t for t, _ in s] for s in test_sents]
-        test_head_flags = np.array([e.head_flags for e in test_data])
-        write_predictions(test_tokens, test_input, test_head_flags,
+        pred_tokens = [[t for t, _ in s] for s in pred_sents]
+        pred_head_flags = np.array([e.head_flags for e in pred_data])
+        write_predictions(pred_tokens, pred_input, pred_head_flags,
                           pred, vocab, labels, args.output)
     print('best dev result', dev_cb.best, 'for epoch', dev_cb.best_epoch)
     return 0
