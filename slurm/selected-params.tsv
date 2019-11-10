@@ -1,0 +1,12 @@
+init_checkpoint	models/bert-base-finnish-cased/bert-base-finnish-cased	data_dir	data/ftb	max_seq_length	512	train_batch_size	20	learning_rate	5e-5	num_train_epochs	4
+init_checkpoint	models/bert-base-finnish-uncased/bert-base-finnish-uncased	data_dir	data/ftb	max_seq_length	512	train_batch_size	16	learning_rate	5e-5	num_train_epochs	4
+init_checkpoint	models/multi_cased_L-12_H-768_A-12/bert_model.ckpt	data_dir	data/ftb	max_seq_length	512	train_batch_size	20	learning_rate	5e-5	num_train_epochs	4
+init_checkpoint	models/multilingual_L-12_H-768_A-12/bert_model.ckpt	data_dir	data/ftb	max_seq_length	512	train_batch_size	20	learning_rate	5e-5	num_train_epochs	4
+init_checkpoint	models/bert-base-finnish-cased/bert-base-finnish-cased	data_dir	data/pud	max_seq_length	512	train_batch_size	16	learning_rate	5e-5	num_train_epochs	4
+init_checkpoint	models/bert-base-finnish-uncased/bert-base-finnish-uncased	data_dir	data/pud	max_seq_length	512	train_batch_size	16	learning_rate	5e-5	num_train_epochs	4
+init_checkpoint	models/multi_cased_L-12_H-768_A-12/bert_model.ckpt	data_dir	data/pud	max_seq_length	512	train_batch_size	20	learning_rate	5e-5	num_train_epochs	4
+init_checkpoint	models/multilingual_L-12_H-768_A-12/bert_model.ckpt	data_dir	data/pud	max_seq_length	512	train_batch_size	16	learning_rate	5e-5	num_train_epochs	4
+init_checkpoint	models/bert-base-finnish-cased/bert-base-finnish-cased	data_dir	data/tdt	max_seq_length	512	train_batch_size	20	learning_rate	3e-5	num_train_epochs	4
+init_checkpoint	models/bert-base-finnish-uncased/bert-base-finnish-uncased	data_dir	data/tdt	max_seq_length	512	train_batch_size	16	learning_rate	5e-5	num_train_epochs	4
+init_checkpoint	models/multi_cased_L-12_H-768_A-12/bert_model.ckpt	data_dir	data/tdt	max_seq_length	512	train_batch_size	20	learning_rate	5e-5	num_train_epochs	4
+init_checkpoint	models/multilingual_L-12_H-768_A-12/bert_model.ckpt	data_dir	data/tdt	max_seq_length	512	train_batch_size	20	learning_rate	5e-5	num_train_epochs	4
