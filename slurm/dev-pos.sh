@@ -32,11 +32,11 @@ VOCAB="$(dirname "$MODEL")/vocab.txt"
 CONFIG="$(dirname "$MODEL")/bert_config.json"
 
 if [[ $MODEL =~ "uncased" ]]; then
-    lower_case="true"
+    caseparam="--do_lower_case"
 elif [[ $MODEL =~ "multilingual" ]]; then
-    lower_case="true"
+    caseparam="--do_lower_case"
 else
-    lower_case="false"
+    caseparam=""
 fi
 
 rm -f latest.out latest.err
