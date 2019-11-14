@@ -27,19 +27,14 @@ data/ftb
 data/pud
 "
 
-# SEQ_LENS="128"
 SEQ_LENS="512"
 
-# BATCH_SIZES="20"
 BATCH_SIZES="16 20"
 
-# LEARNING_RATES="5e-5"
 LEARNING_RATES="5e-5 3e-5 2e-5"
 
-# EPOCHS="2"
 EPOCHS="2 3 4"
 
-# REPETITIONS=1
 REPETITIONS=3
 
 for repetition in `seq $REPETITIONS`; do
