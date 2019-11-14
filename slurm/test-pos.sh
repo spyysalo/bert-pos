@@ -4,26 +4,38 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
 #SBATCH -p gpu
-#SBATCH -t 00:30:00
+#SBATCH -t 01:00:00
 #SBATCH --gres=gpu:v100:1
 #SBATCH --ntasks-per-node=1
 #SBATCH --account=Project_2001710
 #SBATCH -o logs/%j.out
 #SBATCH -e logs/%j.err
 
-if [ "$#" -ne 2 ]; then
-    echo "Usage: $0 MODEL DATA"
+function on_exit {
+    rm -f out-$SLURM_JOBID.tsv
+    rm -f combined-$SLURM_JOBID.conllu
+    rm -f jobs/$SLURM_JOBID
+}
+trap on_exit EXIT
+
+if [ "$#" -ne 6 ]; then
+    echo "Usage: $0 model data_dir seq_len batch_size learning_rate epochs"
     exit 1
 fi
 
-model="$1"
-datadir="$2"
+MODEL="$1"
+DATA_DIR="$2"
+MAX_SEQ_LENGTH="$3"
+BATCH_SIZE="$4"
+LEARNING_RATE="$5"
+EPOCHS="$6"
 
-modeldir=$(dirname "$model")
+VOCAB="$(dirname "$MODEL")/vocab.txt"
+CONFIG="$(dirname "$MODEL")/bert_config.json"
 
-if [[ $model =~ "uncased" ]]; then
+if [[ $MODEL =~ "uncased" ]]; then
     caseparam="--do_lower_case"
-elif [[ $model =~ "multilingual" ]]; then
+elif [[ $MODEL =~ "multilingual" ]]; then
     caseparam="--do_lower_case"
 else
     caseparam=""
@@ -39,28 +51,36 @@ source $HOME/venv/keras-bert/bin/activate
 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
-echo "START: $(date)"
+echo "START $SLURM_JOBID: $(date)"
 
 srun python3 train.py \
-    --vocab_file "$modeldir/vocab.txt" \
-    --bert_config_file "$modeldir/bert_config.json" \
-    --init_checkpoint "$model" \
-    --data_dir "$datadir" \
-    --learning_rate 5e-5 \
-    --num_train_epochs 4 \
+    --vocab_file "$VOCAB" \
+    --bert_config_file "$CONFIG" \
+    --init_checkpoint "$MODEL" \
+    --data_dir "$DATA_DIR" \
+    --learning_rate $LEARNING_RATE \
+    --num_train_epochs $EPOCHS \
+    --max_seq_length $MAX_SEQ_LENGTH \
+    --train_batch_size $BATCH_SIZE \
     --predict test \
     --output out-$SLURM_JOBID.tsv \
     $caseparam
 
-python scripts/mergepos.py "$datadir/test.conllu" out-$SLURM_JOBID.tsv \
+python scripts/mergepos.py "$DATA_DIR/test.conllu" out-$SLURM_JOBID.tsv \
     > combined-$SLURM_JOBID.conllu
-python scripts/conll18_ud_eval.py -v "$datadir/gold-test.conllu" \
+result=$(python scripts/conll18_ud_eval.py -v "$DATA_DIR/gold-test.conllu" \
     combined-$SLURM_JOBID.conllu \
-    | perl -pe 's/^/'"$(basename $modeldir)"'\t'"$(basename $datadir)"'\t/'
+    | egrep UPOS)
 
-rm out-$SLURM_JOBID.tsv
-rm combined-$SLURM_JOBID.conllu
+echo -n 'TEST-RESULT'$'\t'
+echo -n 'init_checkpoint'$'\t'"$MODEL"$'\t'
+echo -n 'data_dir'$'\t'"$DATA_DIR"$'\t'
+echo -n 'max_seq_length'$'\t'"$MAX_SEQ_LENGTH"$'\t'
+echo -n 'train_batch_size'$'\t'"$BATCH_SIZE"$'\t'
+echo -n 'learning_rate'$'\t'"$LEARNING_RATE"$'\t'
+echo -n 'num_train_epochs'$'\t'"$EPOCHS"$'\t'
+echo "$result"
 
 seff $SLURM_JOBID
 
-echo "END: $(date)"
+echo "END $SLURM_JOBID: $(date)"
