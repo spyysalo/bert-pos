@@ -23,6 +23,7 @@ python3 train.py \
     --data_dir "$DATADIR" \
     --learning_rate 5e-5 \
     --num_train_epochs 3 \
+    --predict test \
     --output pred.tsv
 
 python scripts/mergepos.py "$DATADIR/test.conllu" pred.tsv > pred.conllu
