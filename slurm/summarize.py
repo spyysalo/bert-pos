@@ -50,7 +50,9 @@ def data_and_model(params):
     return (parsed['data_dir'], parsed['init_checkpoint'])
 
 
-def read_logs(filenames, clean=True):
+def read_logs(filenames, clean=True, regex=None):
+    if regex is None:
+        regex = result_re
     missing = []
     results = defaultdict(list)
     for fn in filenames:
@@ -58,7 +60,7 @@ def read_logs(filenames, clean=True):
         with open(fn) as f:
             for l in f:
                 l = l.rstrip('\n')
-                m = result_re.match(l)
+                m = regex.match(l)
                 if not m:
                     continue
                 if found:
