@@ -105,3 +105,33 @@ fi_ftb: 1. HIT-SCIR (Harbin): 96.70
 fi_pud: 1. LATTICE (Paris)  : 97.65
 fi_tdt: 1. HIT-SCIR (Harbin): 97.30
 ```
+
+## BERT model comparison for Finnish POS tagging
+
+The scripts run here are specific to a particular Slurm system configuration.
+You will need to edit them to match your setup if you want to rerun this.
+
+```
+./slurm/run-parameter-selection.sh
+python3 slurm/select_params.py logs/*.out | cut -f 1-12 > slurm/selected-params.tsv
+./slurm/run-selected-params.sh
+python3 slurm/summarize_test.py logs/*.out | cut -f 2,4,11-14 > results.tsv
+```
+
+This should give approximately the following results:
+
+```
+Model             Corpus Mean
+FinBERT cased     FTB    98.39
+FinBERT uncased   FTB    98.28
+M-BERT  cased     FTB    95.87
+M-BERT  uncased   FTB    96.00
+FinBERT cased     PUD    98.08
+FinBERT uncased   PUD    97.94
+M-BERT  cased     PUD    97.58
+M-BERT  uncased   PUD    97.48
+FinBERT cased     TDT    98.23
+FinBERT uncased   TDT    98.12
+M-BERT  cased     TDT    96.97
+M-BERT  uncased   TDT    96.59
+```
